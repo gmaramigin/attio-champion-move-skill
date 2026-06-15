@@ -85,6 +85,7 @@ Discover live with `list-attribute-definitions object=people`. Relevant slugs:
 | Stakeholder Type | `stakeholder_type` | select | Seat importance |
 | Contact Owner | `contact_owner` | actor-reference (multi) | BD owner to notify |
 | Last job change | `last_job_change` | text | Stamp the detected move here |
+| LinkedIn checked | `linkedin_checked` | date | Stamp every run (the idempotency anchor), even on a no-move pass |
 
 The `insurers` object links to people via `referral_contact` (people) and `main_company` (companies). Read an insurer's `name` for the gap analysis.
 
@@ -123,7 +124,7 @@ The `insurers` object links to people via `referral_contact` (people) and `main_
    - Write a note on the person record containing the gap analysis + both drafts (see output rules).
    - If `moves_list_available`: `add-record-to-list` to `<MOVES_LIST>` with the entry values in references/attio-setup.md (status `New`, affected insurer, vacated role, new company, new role, detected on, source). Else note `moves_list_missing` in the summary.
    - If `<SLACK_CHANNEL>` set: one-line alert (person, old → new, affected insurer, vacated role).
-7. **Record the check** for idempotency (see below), even on a no-move pass.
+7. **Stamp `linkedin_checked = today`** on the person (the idempotency anchor), even on a no-move pass. Skip if `<DRY_RUN>`. If the stamp write fails, do not count the person as checked, so the next run retries.
 8. **Progress log**: checked, moves confirmed, possible moves, no-LinkedIn skips, recently-checked skips, failures.
 
 **Run summary:** print a table (person / old → new / affected insurer / vacated role / status) + counts + warnings (moves list missing, recheck field missing, APIFY unavailable).
@@ -144,7 +145,7 @@ A weekly task fires this skill. The skill is installed on the account; read its 
 
 LinkedIn roles change rarely, so checking everyone every week wastes APIFY credit and risks re-flagging the same move. Two guards:
 
-- **Recheck window.** Skip anyone checked within `<RECHECK_DAYS>`. Track the check date. Preferred: a `linkedin_checked` date attribute on people (customer adds it; the MCP cannot create attributes). If that field is absent, fall back to parsing the date prefix of the latest `last_job_change` entry, and to Champion Moves list membership.
+- **Recheck window.** Skip anyone whose `linkedin_checked` date is within `<RECHECK_DAYS>` of today. Stamp `linkedin_checked = today` on every pass (move or no move) so coverage rotates and nobody is re-fetched too often. (`linkedin_checked` is a date attribute on people, confirmed present. If it is ever missing, fall back to the date prefix of the latest `last_job_change` entry plus Champion Moves list membership.)
 - **Move dedup.** Before flagging, check whether this exact move (same new company) is already recorded in `last_job_change` or already an entry in the Champion Moves list. If so, skip; do not create a duplicate.
 
 ## Error handling
@@ -223,12 +224,7 @@ Verify against the live workspace before the first scheduled run. Slugs reflect 
 | Stakeholder Type | `stakeholder_type` | select | Seat importance (VIP, Key Stakeholder, F contact) |
 | Contact Owner | `contact_owner` | actor-reference (multi) | BD owner to notify |
 | Last job change | `last_job_change` | text | Stamp the detected move here (append, newest first) |
-
-Recommended new attribute (customer adds in Attio; MCP cannot create attributes):
-
-| Field | Slug | Type | Why |
-|---|---|---|---|
-| LinkedIn checked | `linkedin_checked` | date | Idempotency anchor. Stamp the check date every run, even on a no-move pass. Without it, the agent falls back to `last_job_change` dates + Champion Moves membership |
+| LinkedIn checked | `linkedin_checked` | date | Idempotency anchor. Stamp the check date every run, even on a no-move pass. Confirmed present in the workspace |
 
 ## The people ↔ insurer link
 

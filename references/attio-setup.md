@@ -16,12 +16,7 @@ Verify against the live workspace before the first scheduled run. Slugs reflect 
 | Stakeholder Type | `stakeholder_type` | select | Seat importance (VIP, Key Stakeholder, F contact) |
 | Contact Owner | `contact_owner` | actor-reference (multi) | BD owner to notify |
 | Last job change | `last_job_change` | text | Stamp the detected move here (append, newest first) |
-
-Recommended new attribute (customer adds in Attio; MCP cannot create attributes):
-
-| Field | Slug | Type | Why |
-|---|---|---|---|
-| LinkedIn checked | `linkedin_checked` | date | Idempotency anchor. Stamp the check date every run, even on a no-move pass. Without it, the agent falls back to `last_job_change` dates + Champion Moves membership |
+| LinkedIn checked | `linkedin_checked` | date | Idempotency anchor. Stamp the check date every run, even on a no-move pass. Confirmed present in the workspace |
 
 ## The people ↔ insurer link
 

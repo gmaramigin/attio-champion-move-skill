@@ -28,7 +28,7 @@ Every week, for your high-value insurer contacts:
 - Claude with the **Attio**, **APIFY**, and **Lusha** MCP connectors connected, and web search available, on the account that runs the schedule.
 - An Attio workspace with `people` and `insurers` objects and **edit** access.
 - A **Champion Moves** list on the `people` object (see setup step 2).
-- Recommended: a `linkedin_checked` date attribute on `people` (setup step 3).
+- A `linkedin_checked` date attribute on `people` (present in the workspace; the agent stamps it each run).
 
 ## Setup
 
@@ -42,8 +42,8 @@ Confirm `company`, `job_title`, `linkedin`, `tpa_role`, `buying_role`, `stakehol
 ### 2. Create the Champion Moves list
 New list, parent object **people**, name **Champion Moves**. Entry attributes: `Status` (status: New / Drafts ready / Outreach sent / Closed), `Affected insurer` (record-reference → insurers), `Vacated role` (text), `New company` (text), `New role` (text), `Detected on` (date), `Source` (text), `Confidence` (select: Confirmed / Possible). See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). Note the slug for `<MOVES_LIST>`.
 
-### 3. (Recommended) Add a `linkedin_checked` date attribute
-On the `people` object, add a date attribute `LinkedIn checked`. The agent stamps it every run so it does not re-check people too often. Without it, the agent falls back to `last_job_change` dates and Champion Moves membership.
+### 3. `linkedin_checked` date attribute (done)
+The `people` object has a `LinkedIn checked` date attribute (slug `linkedin_checked`). The agent stamps it every run so it does not re-check people too often.
 
 ### 4. Identify the APIFY LinkedIn actor
 > Which APIFY actors do I have for LinkedIn profiles?

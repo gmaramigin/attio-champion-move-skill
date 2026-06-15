@@ -21,7 +21,7 @@ Claude Code (CLI): create `~/.claude/skills/champion-move-alert/` and copy SKILL
 3. **Lusha** → connected (fallback profile resolution).
 4. **Web search** → enabled.
 
-Also confirm the **Champion Moves** list exists on the `people` object, and (recommended) the `linkedin_checked` date attribute.
+Also confirm the **Champion Moves** list exists on the `people` object. The `linkedin_checked` date attribute is already present; the agent stamps it each run.
 
 ## Part 3 — Set the weekly schedule
 
