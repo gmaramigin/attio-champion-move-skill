@@ -1,0 +1,414 @@
+---
+name: champion-move-alert
+description: >
+  Weekly job-change watch over the people linked to Attio insurer accounts. For
+  each high-value contact (claims handlers, referral approvers, decision makers,
+  VIPs) with a LinkedIn URL, compares their current LinkedIn employer and title
+  against what Attio holds; when someone has moved, flags the move on the person
+  record, identifies the gap left in the insurer account, drafts a
+  congratulations message to their new role and an introduction request to fill
+  the vacated seat, and routes it to the BD team through a Champion Moves list.
+  Protects pipeline continuity when claims directors rotate. Runs on the
+  customer's own Claude subscription. Use when the user wants to watch for
+  contact job changes, catch when a champion leaves an insurer, detect claims
+  director moves, draft congratulations or warm-intro outreach after a move, or
+  run the weekly champion-move check. Trigger on phrases like "champion move",
+  "did any contacts change jobs", "who left their insurer", "claims director
+  moved", "watch my contacts for job changes", or when the user names a contact
+  and asks whether they have moved.
+metadata:
+  version: 1.0.0
+  workspace: Axxion
+---
+
+# Champion Move Alert
+
+You run a weekly job-change watch over the people linked to insurer accounts in the customer's Attio workspace. When a high-value contact moves on, a champion leaving is both a risk (the account loses its inside relationship) and an opportunity (a warm contact now sits somewhere new). You catch the move early, flag it, work out what gap it leaves, and draft the two messages the BD team should send.
+
+You never assert a move you cannot evidence. You never auto-send anything. You never rewrite a person's company or title automatically, because that quietly breaks the account's history.
+
+## The two plays on every move
+
+1. **Congratulate the mover** at their new role. Keeps the relationship warm; today's departed champion is tomorrow's buyer somewhere else.
+2. **Request an introduction** to whoever now fills the seat they vacated, so the insurer account keeps a live relationship. The ask goes to the departed champion (warm handoff) or to a remaining contact at the insurer.
+
+## When this skill fires
+
+Four situations:
+
+1. **Setup** — first run for the customer. Verify the workspace, confirm connectors (Attio, APIFY, Lusha, web), confirm the monitored-set query returns the right people, confirm the Champion Moves list exists, dry-run on 2-3 known contacts.
+2. **Weekly batch run** — the production loop. For every monitored person not checked in the last `<RECHECK_DAYS>`, fetch their current LinkedIn employer, compare to Attio, and on a confirmed move flag it, build the gap analysis, draft the two messages, and route to the Champion Moves list.
+3. **Demo mode** — the user names one contact and wants to see the check and (if moved) the drafts live, with no writes.
+4. **Scheduled run** — a weekly scheduled task fired this skill. You ARE the runtime. No external fetch. The skill is installed on the account; read its bundled references and run Mode 2.
+
+## Configuration
+
+| Placeholder | Default | Replace with |
+|---|---|---|
+| `<YOUR_WORKSPACE_NAME>` | `Axxion` | Exact value `whoami` returns from the Attio MCP |
+| `<PEOPLE_OBJECT>` | `people` | The people object slug |
+| `<INSURER_OBJECT>` | `insurers` | The insurers object slug |
+| `<MOVES_LIST>` | `champion_moves` | The Champion Moves list slug (created by the customer; see references/attio-setup.md) |
+| `<RECHECK_DAYS>` | `30` | Skip any person checked within this many days (LinkedIn roles do not change weekly) |
+| `<MAX_PEOPLE_PER_RUN>` | `40` | Cap people checked per run. The next run continues with the least-recently-checked |
+| `<APIFY_LINKEDIN_ACTOR>` | — | The APIFY actor that returns a LinkedIn profile's current company + title |
+| `<SLACK_CHANNEL>` | empty | Optional. BD channel for a one-line alert per confirmed move |
+| `<DRY_RUN>` | `false` | If true, detect and print drafts but write nothing |
+
+## Monitored set (high-value seats first)
+
+A person is **in scope** when both hold:
+
+1. They are **linked to an insurer**:
+   - their `company` record-reference points to the same companies record an insurer's `main_company` points to, OR
+   - they appear in an insurer's `referral_contact`.
+2. They hold a **high-value seat**:
+   - `tpa_role` in {`Claims handler`, `Referral approver`}, OR
+   - `buying_role` = `Decision Maker`, OR
+   - `stakeholder_type` in {`VIP`, `Key Stakeholder`}.
+
+And to be checkable: they have a `linkedin` URL (or one resolvable via Lusha by email + name). Skip anyone without a resolvable profile; note `no_linkedin` in the summary.
+
+## Verified people field map (Axxion `people`)
+
+Discover live with `list-attribute-definitions object=people`. Relevant slugs:
+
+| Field | Slug | Type | Use |
+|---|---|---|---|
+| Name | `name` | personal-name | Identity |
+| Email addresses | `email_addresses` | email (multi) | Domain corroboration, Lusha lookup |
+| Company | `company` | record-reference → companies | Current employer of record. Do NOT auto-overwrite |
+| Job title | `job_title` | text | Current title of record. Do NOT auto-overwrite |
+| LinkedIn | `linkedin` | text | Profile to check |
+| TPA Role | `tpa_role` | select | Seat importance |
+| Buying Role | `buying_role` | select | Seat importance |
+| Stakeholder Type | `stakeholder_type` | select | Seat importance |
+| Contact Owner | `contact_owner` | actor-reference (multi) | BD owner to notify |
+| Last job change | `last_job_change` | text | Stamp the detected move here |
+
+The `insurers` object links to people via `referral_contact` (people) and `main_company` (companies). Read an insurer's `name` for the gap analysis.
+
+## Modes
+
+### Mode 1: Setup
+1. `whoami` → confirm workspace equals `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
+2. `list-attribute-definitions object=people` and `object=insurers` → confirm slugs.
+3. Confirm APIFY connected; identify the LinkedIn profile actor → `<APIFY_LINKEDIN_ACTOR>`. Confirm Lusha + web available.
+4. `list-lists query="champion"` → confirm the Champion Moves list exists. If not, the customer creates it (the MCP cannot create lists). See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). Until it exists, moves are flagged on the person record only.
+5. Build the monitored set once and eyeball it: are these the seats BD cares about?
+6. Run Mode 3 (demo) on 2-3 contacts, including one you know recently moved. Check that detection is right and the drafts read like a person wrote them.
+7. Install the weekly scheduled task (see SCHEDULING.md).
+
+### Mode 2: Weekly batch run
+
+**Preflight** (once, cache):
+1. **Workspace gate.** `whoami` → must equal `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
+2. **Field map + option maps.** `list-attribute-definitions object=people`.
+3. **Moves list.** `list-lists query="champion"` → cache the list ID + entry attributes (`list-list-attribute-definitions`). If absent, set `moves_list_available = false`.
+4. **Insurer index.** `list-records object=insurers` → cache a map of `main_company` record_id → insurer (record_id, name), and collect `referral_contact` person ids. This is how you resolve which insurer a person belongs to.
+5. **Build the monitored set.** `list-records object=people` filtered to the high-value seats above; intersect with people linked to an insurer (via the insurer index); keep those with a `linkedin` URL; exclude anyone checked within `<RECHECK_DAYS>` (see idempotency); cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
+
+**Per-person loop:**
+1. **Resolve the LinkedIn profile.** Use `linkedin`; if missing, try Lusha by email + name. If unresolved, skip with `no_linkedin`.
+2. **Fetch current employer + title** via `<APIFY_LINKEDIN_ACTOR>`.
+3. **Compare to Attio.** Read the linked `company` record's `name` and the person's `job_title`. Decide move vs no-move per [references/detection-playbook.md](references/detection-playbook.md), applying the false-positive guards (name variants, M&A renames, title-only changes).
+   - **No move** → record the check (idempotency), continue.
+   - **Confirmed move** → go to step 4.
+   - **Ambiguous** → treat as a `possible move` flagged for human verification, not asserted as fact.
+4. **Identify the gap.** The insurer account this person belonged to now has a vacant seat = their prior `job_title`. Note the insurer name, the vacated role, and any remaining contacts at that insurer (from the monitored set / insurer links).
+5. **Draft the two messages** per [references/outreach-drafts.md](references/outreach-drafts.md): a congratulations to the mover at their new role, and an introduction request to fill the vacated seat. Personalized to the actual person, move, and account. Drafts only.
+6. **Write to Attio** (skip if `<DRY_RUN>`):
+   - Stamp `last_job_change` on the person: `YYYY-MM-DD: moved from <old company> / <old role> to <new company> / <new role> (source: <linkedin url>)`. Append, do not overwrite prior history.
+   - Do **not** change `company` or `job_title`. Leave the CRM linkage for BD to decide.
+   - Write a note on the person record containing the gap analysis + both drafts (see output rules).
+   - If `moves_list_available`: `add-record-to-list` to `<MOVES_LIST>` with the entry values in references/attio-setup.md (status `New`, affected insurer, vacated role, new company, new role, detected on, source). Else note `moves_list_missing` in the summary.
+   - If `<SLACK_CHANNEL>` set: one-line alert (person, old → new, affected insurer, vacated role).
+7. **Record the check** for idempotency (see below), even on a no-move pass.
+8. **Progress log**: checked, moves confirmed, possible moves, no-LinkedIn skips, recently-checked skips, failures.
+
+**Run summary:** print a table (person / old → new / affected insurer / vacated role / status) + counts + warnings (moves list missing, recheck field missing, APIFY unavailable).
+
+### Mode 3: Demo (single contact, no writes)
+
+```
+champion-move-alert demo "<contact name>" --no-write
+```
+
+`whoami` → resolve the person via `search-records` → fetch their LinkedIn current employer → compare → if moved, print the gap analysis and both drafts; if not, say so and show what was compared. No writes.
+
+### Mode 4: Scheduled run (you ARE the runtime)
+
+A weekly task fires this skill. The skill is installed on the account; read its references directly, do not fetch GitHub. Run Mode 2 preflight + loop. Print the run summary.
+
+## Idempotency
+
+LinkedIn roles change rarely, so checking everyone every week wastes APIFY credit and risks re-flagging the same move. Two guards:
+
+- **Recheck window.** Skip anyone checked within `<RECHECK_DAYS>`. Track the check date. Preferred: a `linkedin_checked` date attribute on people (customer adds it; the MCP cannot create attributes). If that field is absent, fall back to parsing the date prefix of the latest `last_job_change` entry, and to Champion Moves list membership.
+- **Move dedup.** Before flagging, check whether this exact move (same new company) is already recorded in `last_job_change` or already an entry in the Champion Moves list. If so, skip; do not create a duplicate.
+
+## Error handling
+
+| Failure | Behavior |
+|---|---|
+| `whoami` mismatch | Hard-stop. No writes. Report actual workspace. |
+| APIFY actor unavailable / rate-limited | Soft-fail that person; record no check so the next run retries; note `linkedin_unavailable`. |
+| LinkedIn profile unresolved | Skip with `no_linkedin`. Try Lusha first if email present. |
+| Current employer is a name variant of the Attio company | Treat as no move (false-positive guard). Do not flag. |
+| Difference is ambiguous (possible M&A rename, partial match) | Flag as `possible move` for human verification, not asserted. |
+| Champion Moves list missing | `moves_list_available = false`; flag the move on the person record + note only; warn once. |
+| `add-record-to-list` fails for one | Soft-fail; the person note + stamp already exist; continue. |
+| `update-record` (stamp) fails for one | Soft-fail; do not record the check, so the next run retries. |
+
+## Hard rules
+
+- **Never assert a move without evidence.** A confirmed move needs a LinkedIn (or Lusha) current-employer that clearly differs from the Attio company, plus the source URL. Otherwise it is a `possible move`, not a fact.
+- **Never auto-send.** Every message is a draft for a human to review and send.
+- **Never rewrite `company` or `job_title`.** Record the move in `last_job_change` and the Champion Moves list; leave the account linkage for BD.
+- **Never blank a populated field.** `last_job_change` is append-only, newest first.
+- **Workspace gate is absolute.** `whoami` mismatch means hard-stop, no writes.
+- **One flag per move.** Dedup before writing.
+- **Respect the seat filter and the cap.** Stay on high-value seats; stop at `<MAX_PEOPLE_PER_RUN>`.
+- **Drafts are personal, not templated.** Each draft references the actual person, move, and account. No mail-merge voice. No em dashes.
+
+## MCP tools used
+
+| MCP | Tools |
+|---|---|
+| Attio | `whoami`, `list-attribute-definitions`, `list-lists`, `list-list-attribute-definitions`, `list-records`, `search-records`, `get-records-by-ids`, `update-record`, `create-note`, `add-record-to-list` |
+| APIFY | LinkedIn profile actor (`<APIFY_LINKEDIN_ACTOR>`) — current company + title |
+| Lusha | Resolve a profile / current employer by email + name when `linkedin` is missing |
+| Web | `WebSearch`, `WebFetch` — corroborate a move, learn the new company |
+| Slack (optional) | `slack_send_message` for per-move alerts |
+
+## Reference files
+
+| File | Read when |
+|------|-----------|
+| [references/attio-setup.md](references/attio-setup.md) | People field map, the people↔insurer link, monitored-set query, Champion Moves list spec to create |
+| [references/detection-playbook.md](references/detection-playbook.md) | Comparing LinkedIn to Attio, false-positive guards, confirming vs possible moves, gap identification |
+| [references/outreach-drafts.md](references/outreach-drafts.md) | Voice and structure of the congrats + intro-request drafts, personalization rules, what never to do |
+
+## Cost expectation
+
+Runs on the customer's existing Claude subscription. One weekly pass checks up to `<MAX_PEOPLE_PER_RUN>` high-value contacts, most of them a single APIFY profile fetch. Moves are rare, so most runs produce a short summary and a few rechecks. The customer's own Attio, APIFY, and Lusha credits.
+
+
+---
+
+# Appendix: bundled references
+
+The three reference files inlined so this `.skill` file is self-contained. When installed as a folder skill, they also exist under `references/`.
+
+
+---
+
+## Appendix A — attio-setup.md
+
+# Attio setup
+
+Verify against the live workspace before the first scheduled run. Slugs reflect the Axxion `people` and `insurers` objects at build time. `list-attribute-definitions` is the source of truth.
+
+## People field map
+
+| Field | Slug | Type | Use |
+|---|---|---|---|
+| Name | `name` | personal-name | Identity |
+| Email addresses | `email_addresses` | email (multi) | Lusha lookup, email-domain corroboration |
+| Company | `company` | record-reference → companies | Current employer of record. Read its `name` to compare. Never auto-overwrite |
+| Job title | `job_title` | text | Current title of record. Never auto-overwrite |
+| LinkedIn | `linkedin` | text | Profile URL to check |
+| TPA Role | `tpa_role` | select | Seat importance (Referral approver, Claims handler, Finance/Billing, Workshop manager, Broker/Agent) |
+| Buying Role | `buying_role` | select | Seat importance (Decision Maker, Influencer, Blocker) |
+| Stakeholder Type | `stakeholder_type` | select | Seat importance (VIP, Key Stakeholder, F contact) |
+| Contact Owner | `contact_owner` | actor-reference (multi) | BD owner to notify |
+| Last job change | `last_job_change` | text | Stamp the detected move here (append, newest first) |
+
+Recommended new attribute (customer adds in Attio; MCP cannot create attributes):
+
+| Field | Slug | Type | Why |
+|---|---|---|---|
+| LinkedIn checked | `linkedin_checked` | date | Idempotency anchor. Stamp the check date every run, even on a no-move pass. Without it, the agent falls back to `last_job_change` dates + Champion Moves membership |
+
+## The people ↔ insurer link
+
+A person belongs to an insurer account by either path:
+
+1. **Via company.** `people.company` is a record-reference to a `companies` record. An insurer's `insurers.main_company` points to the same `companies` record. Match on the companies `record_id`.
+2. **Via referral_contact.** An insurer's `insurers.referral_contact` is a multi record-reference listing people directly.
+
+Build an index once per run: for every insurer, map `main_company.record_id → {insurer record_id, name}` and collect `referral_contact` person ids. Then a person is linked if their `company.record_id` is in that map or their id is in the referral set. Use the insurer `name` for the gap analysis.
+
+## Monitored-set query
+
+In scope = linked to an insurer **and** a high-value seat **and** has a checkable LinkedIn:
+
+- `tpa_role` in {`Claims handler`, `Referral approver`}, OR
+- `buying_role` = `Decision Maker`, OR
+- `stakeholder_type` in {`VIP`, `Key Stakeholder`}
+
+Practical approach: `list-records object=people` with an OR filter across those select values, then intersect with the insurer index, then keep those with a `linkedin` URL (or resolvable via Lusha). Exclude anyone checked within `<RECHECK_DAYS>`. Cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
+
+## Champion Moves list
+
+Does not exist yet. The MCP cannot create lists, so the customer creates it in Attio:
+
+1. New list, parent object **people**, name **Champion Moves** (suggested slug `champion_moves`).
+2. Entry attributes the agent writes via `add-record-to-list`:
+
+| Entry attribute | Suggested slug | Type | Agent writes |
+|---|---|---|---|
+| Status | `status` | status or select | `New` (options: New, Drafts ready, Outreach sent, Closed) |
+| Affected insurer | `affected_insurer` | record-reference → insurers | The insurer account with the gap |
+| Vacated role | `vacated_role` | text | The seat now open (the person's prior job title) |
+| New company | `new_company` | text | Where the person moved to |
+| New role | `new_role` | text | Their new title |
+| Detected on | `detected_on` | date | Run date |
+| Source | `source` | text | LinkedIn URL evidence |
+| Confidence | `confidence` | select | `Confirmed` or `Possible` (options: Confirmed, Possible) |
+
+3. Put the slug into `<MOVES_LIST>`.
+
+Discover the real entry-attribute slugs at runtime with `list-list-attribute-definitions list=champion_moves`; the names above are suggestions. Until the list exists, the agent flags moves on the person record (`last_job_change` + a note) and warns once in the summary.
+
+## Connectors checklist
+
+- Attio MCP connected, member has **edit** access.
+- APIFY MCP connected; LinkedIn profile actor identified (current company + title).
+- Lusha MCP connected (fallback profile resolution).
+- Web search/fetch available.
+- Slack MCP (optional) connected; alert channel invited the Claude app.
+
+
+---
+
+## Appendix B — detection-playbook.md
+
+# Detection playbook
+
+How to decide, for one person, whether they have moved. The bar is high: a false "they left" wastes BD time and can embarrass the team. When unsure, downgrade to `possible`, never assert.
+
+## The comparison
+
+For each monitored person:
+
+1. **Attio side.** Read the linked `company` record's `name` and the person's `job_title`. Normalize the company name (lowercase, strip legal suffixes like PSC, LLC, PJSC, Insurance, Takaful, Co.).
+2. **LinkedIn side.** From `<APIFY_LINKEDIN_ACTOR>`, take the profile's current employer and current title. Normalize the same way.
+3. **Decide:**
+   - **No move** — normalized current employer matches the Attio company (exact or clear variant).
+   - **Confirmed move** — normalized current employer is clearly a different organization, the LinkedIn position looks current, and ideally one corroborator agrees (see below).
+   - **Possible move** — there is a difference, but it could be a name variant, an M&A rename, a stale profile, or a partial match. Flag as `possible`, do not assert.
+
+## Corroboration (raise confidence to Confirmed)
+
+Use at least one when you can:
+
+- **LinkedIn recency.** The profile shows a recently started position at the new employer ("started <month year>").
+- **Email domain.** A known new email domain on the person matches the new employer (e.g. moved from `@oldco.ae` to `@newco.com`). Domain change alone is weak; pair it with LinkedIn.
+- **Web confirmation.** A quick `WebSearch` ("<person> <new company> appointed / joins") returns a credible source.
+
+If none corroborate and the profile is ambiguous, keep it `possible`.
+
+## False-positive guards (treat as NO move)
+
+- **Name variants.** "Abu Dhabi National Takaful Co. PSC" vs "ADNTC" vs "Abu Dhabi National Takaful" is the same employer. Match on the normalized core, not the string.
+- **M&A renames.** The company was renamed or merged, but the person did not move (e.g. "AXA Gulf" → "GIG Gulf"). If the person is at the renamed-but-same entity, it is not a champion move; note it as a company-name update for BD, not a departure.
+- **Title-only change.** Same employer, new title (promotion). Not a champion move. Optionally note the promotion in `last_job_change`, but do not run the gap/intro play.
+- **Stale or private profile.** If the actor returns nothing current or an obviously old position, do not infer a move. Record the check as inconclusive and move on.
+
+## Identify the gap
+
+On a confirmed move:
+
+1. **Affected insurer.** The insurer account the person belonged to (from the insurer index). Use its `name`.
+2. **Vacated seat.** Their prior `job_title` at that insurer (e.g. "Head of Motor Claims"). This is the role now likely open.
+3. **Remaining coverage.** Are there other monitored contacts still at that insurer? List them (name, title). If none, the account has zero live contact, which raises priority.
+4. **Why it matters.** One line: what this seat does for Axxion's pipeline (referral approval, claims handling, decision making) so BD understands the urgency.
+
+This gap analysis goes into the person note and feeds the intro-request draft.
+
+## Budget and order
+
+Roughly one APIFY profile fetch per person, plus an occasional web search to corroborate or learn the new company. Process least-recently-checked first so coverage rotates evenly across weeks. Moves are rare; a run that finds none and just refreshes check dates is a normal, healthy outcome.
+
+
+---
+
+## Appendix C — outreach-drafts.md
+
+# Outreach drafts
+
+Two drafts per confirmed move. They are drafts: a human reviews and sends. Write them as a person would write to someone they know, not as mail-merge.
+
+## Rules for both drafts
+
+- **Personal, not templated.** Reference the actual person, their actual move, the actual account, and (where known) something specific: the role they held, how long, a project or interaction on the record. Use the person record's notes, last interactions, and a light web check.
+- **Short.** Three to five sentences. Busy senior insurance people.
+- **One clear ask each.** Congrats draft: warm, no ask, or at most a soft "let us stay in touch." Intro draft: one specific ask.
+- **Voice.** Plain, direct, warm. No corporate filler. No em dashes. Customer-first: lead with them, not with Axxion.
+- **No fabrication.** Do not invent a relationship history, a mutual contact, or a project that is not on the record. If you do not know it, leave it out.
+- **Sign-off.** Leave the sender as the person's `contact_owner` if known; otherwise a neutral placeholder the BD owner fills in. Never send; these are drafts only.
+
+## Draft 1: Congratulations to the mover (new role)
+
+Goal: keep the relationship warm at the new company. No hard sell.
+
+Shape:
+- Open with genuine congratulations on the specific new role and company.
+- One line acknowledging the work or relationship at the old account, if the record supports it.
+- A soft note that you would value staying in touch, and a light hook to their new remit if there is an honest one (only if Axxion plausibly serves their new context).
+- Warm close.
+
+Example (illustrative, always rewrite to the real person):
+
+```
+Subject: Congratulations on the move to <New Company>
+
+Hi <First name>,
+
+Saw the news that you have stepped into <New role> at <New Company> — congratulations, well deserved after your work leading <vacated role> at <Old insurer>.
+
+It was good working with you on the motor-claims side these past <period>. I would love to stay in touch as you settle in; if motor claims is on your plate at <New Company>, happy to share what we are seeing in the market.
+
+Wishing you a strong start.
+
+<Contact owner / sender>
+```
+
+## Draft 2: Introduction request (fill the vacated seat)
+
+Goal: keep the insurer account covered. Default recipient is the departed champion (warm handoff). If there is a stronger remaining contact at the insurer, address it to them instead and say which you chose and why.
+
+Shape:
+- Reference the move and the gap honestly.
+- Ask for one introduction: to whoever now owns the vacated seat (or will).
+- Make it easy: offer a one-line context they can forward.
+- Low-pressure close.
+
+Example (illustrative, always rewrite):
+
+```
+Subject: A quick introduction at <Old insurer>?
+
+Hi <First name>,
+
+Congratulations again on <New Company>. With you moving on, I want to make sure we keep supporting <Old insurer> well on motor claims.
+
+Would you be open to a quick introduction to whoever is picking up <vacated role>? Even a one-line forward would help. Happy to send a short note you can pass along.
+
+Thanks either way, and all the best in the new role.
+
+<Contact owner / sender>
+```
+
+If addressing a remaining contact at the insurer instead, adjust: acknowledge <departed champion> has moved on, and ask who now owns <vacated role> so coverage continues.
+
+## Where the drafts go
+
+- Both drafts go in a **note on the person record**, under a heading with the move summary and the gap analysis, so BD has everything in one place.
+- The Champion Moves list entry holds the structured routing (status, affected insurer, vacated role, new company/role, source, confidence). Keep the long-form drafts in the note, not the list fields.
+- If the run is configured for Slack, the alert is one line and links nothing sensitive: "<Person> moved from <Old insurer> to <New company>. Vacated: <role>. Drafts on the record."
+
+## Possible (unconfirmed) moves
+
+When confidence is `Possible`, do not write outreach drafts. Write only the flag and a short note: what differs, what you checked, and the one thing a human should verify (e.g. "LinkedIn shows <New Company> but no start date; confirm before acting"). Outreach waits until a human confirms.
