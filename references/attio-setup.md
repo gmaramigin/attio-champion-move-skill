@@ -1,6 +1,6 @@
 # Attio setup
 
-Verify against the live workspace before the first scheduled run. Slugs reflect the Axxion `people` and `insurers` objects at build time. `list-attribute-definitions` is the source of truth.
+Verify against the live workspace before the first scheduled run. Slugs reflect Axxion after the August 2026 migration, when the `insurers` custom object was retired into **Companies**. `list-attribute-definitions object=people` and `list-list-attribute-definitions list=insurers_3` are the source of truth.
 
 ## People field map
 
@@ -22,10 +22,14 @@ Verify against the live workspace before the first scheduled run. Slugs reflect 
 
 A person belongs to an insurer account by either path:
 
-1. **Via company.** `people.company` is a record-reference to a `companies` record. An insurer's `insurers.main_company` points to the same `companies` record. Match on the companies `record_id`.
-2. **Via referral_contact.** An insurer's `insurers.referral_contact` is a multi record-reference listing people directly.
+1. **Via company.** `people.company` is a record-reference to a `companies` record. That company is an insurer when it appears on the **Insurers list** (`insurers_3`). Match on the companies `record_id`.
+2. **Via referral_contact.** `referral_contact` is a record-reference **entry attribute on the Insurers list**, listing people directly.
 
-Build an index once per run: for every insurer, map `main_company.record_id → {insurer record_id, name}` and collect `referral_contact` person ids. Then a person is linked if their `company.record_id` is in that map or their id is in the referral set. Use the insurer `name` for the gap analysis.
+Build an index once per run: `list-records-in-list list=insurers_3` → the set of insurer Company record_ids with their names, plus the `referral_contact` person ids from the entries. A person is linked if their `company.record_id` is in that set or their id is in the referral set. Use the Company `name` for the gap analysis.
+
+The old model put an `insurers` record in the middle, and you had to hop `insurer.main_company → companies`. That hop is gone: the Company *is* the insurer.
+
+**Similar names are separate accounts.** The workspace holds distinct Companies for general vs life licences, takaful vs conventional arms, and branches vs parents (*Chubb Insurance Egypt* / *Chubb Life Egypt*, *Liva Insurance B.S.C.* / *Liva Insurance B.S.C. (c) (UAE Branch)*). Never treat them as one account, and never treat a move between them as a name variant.
 
 ## Monitored-set query
 
@@ -39,25 +43,22 @@ Practical approach: `list-records object=people` with an OR filter across those 
 
 ## Champion Moves list
 
-Does not exist yet. The MCP cannot create lists, so the customer creates it in Attio:
+**Built 18 August 2026.** Parent object **people**, slug `champion_moves`. Nothing to create.
 
-1. New list, parent object **people**, name **Champion Moves** (suggested slug `champion_moves`).
-2. Entry attributes the agent writes via `add-record-to-list`:
-
-| Entry attribute | Suggested slug | Type | Agent writes |
+| Entry attribute | Slug | Type | Agent writes |
 |---|---|---|---|
-| Status | `status` | status or select | `New` (options: New, Drafts ready, Outreach sent, Closed) |
-| Affected insurer | `affected_insurer` | record-reference → insurers | The insurer account with the gap |
-| Vacated role | `vacated_role` | text | The seat now open (the person's prior job title) |
+| Status | `status` | select | `New`. Options: New, Drafts ready, Outreach sent, Closed |
+| Affected insurer | `affected_insurer` | record-reference → **companies** | The insurer account with the gap |
+| Vacated role | `vacated_role` | text | The seat now open, the person's prior job title |
 | New company | `new_company` | text | Where the person moved to |
 | New role | `new_role` | text | Their new title |
-| Detected on | `detected_on` | date | Run date |
-| Source | `source` | text | LinkedIn URL evidence |
-| Confidence | `confidence` | select | `Confirmed` or `Possible` (options: Confirmed, Possible) |
+| Detected on | `detected_on` | date | Run date, not the date the person moved |
+| Source | `source` | text | The LinkedIn URL the move was read from |
+| Confidence | `confidence` | select | `Confirmed` or `Possible` |
 
-3. Put the slug into `<MOVES_LIST>`.
+`affected_insurer` points at **companies**, not the retired insurers object. Insurers are ordinary Companies now and the Insurers list (`insurers_3`) defines the set.
 
-Discover the real entry-attribute slugs at runtime with `list-list-attribute-definitions list=champion_moves`; the names above are suggestions. Until the list exists, the agent flags moves on the person record (`last_job_change` + a note) and warns once in the summary.
+Still discover the live slugs at runtime with `list-list-attribute-definitions list=champion_moves` before writing.
 
 ## Connectors checklist
 

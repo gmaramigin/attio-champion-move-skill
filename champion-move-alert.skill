@@ -17,7 +17,7 @@ description: >
   moved", "watch my contacts for job changes", or when the user names a contact
   and asks whether they have moved.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   workspace: Axxion
 ---
 
@@ -47,7 +47,7 @@ Four situations:
 |---|---|---|
 | `<YOUR_WORKSPACE_NAME>` | `Axxion` | Exact value `whoami` returns from the Attio MCP |
 | `<PEOPLE_OBJECT>` | `people` | The people object slug |
-| `<INSURER_OBJECT>` | `insurers` | The insurers object slug |
+| `<INSURER_LIST>` | `insurers_3` | The Insurers list on Companies. Its membership defines which companies are insurers |
 | `<MOVES_LIST>` | `champion_moves` | The Champion Moves list slug (created by the customer; see references/attio-setup.md) |
 | `<RECHECK_DAYS>` | `30` | Skip any person checked within this many days (LinkedIn roles do not change weekly) |
 | `<MAX_PEOPLE_PER_RUN>` | `40` | Cap people checked per run. The next run continues with the least-recently-checked |
@@ -60,8 +60,8 @@ Four situations:
 A person is **in scope** when both hold:
 
 1. They are **linked to an insurer**:
-   - their `company` record-reference points to the same companies record an insurer's `main_company` points to, OR
-   - they appear in an insurer's `referral_contact`.
+   - their `company` record-reference points to a Company that sits on the Insurers list (`insurers_3`), OR
+   - they appear in that company's Insurers list entry under `referral_contact`.
 2. They hold a **high-value seat**:
    - `tpa_role` in {`Claims handler`, `Referral approver`}, OR
    - `buying_role` = `Decision Maker`, OR
@@ -87,15 +87,17 @@ Discover live with `list-attribute-definitions object=people`. Relevant slugs:
 | Last job change | `last_job_change` | text | Stamp the detected move here |
 | LinkedIn checked | `linkedin_checked` | date | Stamp every run (the idempotency anchor), even on a no-move pass |
 
-The `insurers` object links to people via `referral_contact` (people) and `main_company` (companies). Read an insurer's `name` for the gap analysis.
+**Where insurers live.** Insurers used to be their own custom object; the August 2026 migration retired it into **Companies**. A person now belongs to an insurer when their `company` reference points at a Company that is on the Insurers list. The old `main_company` hop is gone, so resolution is one step instead of two. `referral_contact` is now an entry attribute on the Insurers list, not a field on a custom object. Read the Company `name` for the gap analysis.
+
+**Do not collapse similar insurer names.** The workspace deliberately holds separate Companies for a group's general and life licences, its takaful arm, and its branches. Two people at *Chubb Insurance Egypt* and *Chubb Life Egypt* are at different accounts, and a champion moving between them is a real move.
 
 ## Modes
 
 ### Mode 1: Setup
 1. `whoami` → confirm workspace equals `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
-2. `list-attribute-definitions object=people` and `object=insurers` → confirm slugs.
+2. `list-attribute-definitions object=people` and `list-list-attribute-definitions list=insurers_3` → confirm slugs.
 3. Confirm APIFY connected; identify the LinkedIn profile actor → `<APIFY_LINKEDIN_ACTOR>`. Confirm Lusha + web available.
-4. `list-lists query="champion"` → confirm the Champion Moves list exists. If not, the customer creates it (the MCP cannot create lists). See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). Until it exists, moves are flagged on the person record only.
+4. `list-lists query="champion"` → confirm the Champion Moves list is there. It was built on 18 August 2026, slug `champion_moves`, parent object people, with all eight entry attributes. See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). If it is ever missing, moves are flagged on the person record only.
 5. Build the monitored set once and eyeball it: are these the seats BD cares about?
 6. Run Mode 3 (demo) on 2-3 contacts, including one you know recently moved. Check that detection is right and the drafts read like a person wrote them.
 7. Install the weekly scheduled task (see SCHEDULING.md).
@@ -106,8 +108,8 @@ The `insurers` object links to people via `referral_contact` (people) and `main_
 1. **Workspace gate.** `whoami` → must equal `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
 2. **Field map + option maps.** `list-attribute-definitions object=people`.
 3. **Moves list.** `list-lists query="champion"` → cache the list ID + entry attributes (`list-list-attribute-definitions`). If absent, set `moves_list_available = false`.
-4. **Insurer index.** `list-records object=insurers` → cache a map of `main_company` record_id → insurer (record_id, name), and collect `referral_contact` person ids. This is how you resolve which insurer a person belongs to.
-5. **Build the monitored set.** `list-records object=people` filtered to the high-value seats above; intersect with people linked to an insurer (via the insurer index); keep those with a `linkedin` URL; exclude anyone checked within `<RECHECK_DAYS>` (see idempotency); cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
+4. **Insurer index.** `list-records-in-list list=insurers_3` → cache the set of Company record_ids that are insurers, with their names, and collect the `referral_contact` person ids from the entries. A person's `company` reference hitting that set is what makes them an insurer contact.
+5. **Build the monitored set.** `list-records object=people` filtered to the high-value seats above; intersect with people whose `company` is in the insurer index; keep those with a `linkedin` URL; exclude anyone checked within `<RECHECK_DAYS>` (see idempotency); cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
 
 **Per-person loop:**
 1. **Resolve the LinkedIn profile.** Use `linkedin`; if missing, try Lusha by email + name. If unresolved, skip with `no_linkedin`.
@@ -194,12 +196,11 @@ LinkedIn roles change rarely, so checking everyone every week wastes APIFY credi
 
 Runs on the customer's existing Claude subscription. One weekly pass checks up to `<MAX_PEOPLE_PER_RUN>` high-value contacts, most of them a single APIFY profile fetch. Moves are rare, so most runs produce a short summary and a few rechecks. The customer's own Attio, APIFY, and Lusha credits.
 
-
 ---
 
 # Appendix: bundled references
 
-The three reference files inlined so this `.skill` file is self-contained. When installed as a folder skill, they also exist under `references/`.
+These are the three reference files inlined so this `.skill` file is fully self-contained. When installed as a folder skill, they also exist under `references/`.
 
 
 ---
@@ -208,7 +209,7 @@ The three reference files inlined so this `.skill` file is self-contained. When 
 
 # Attio setup
 
-Verify against the live workspace before the first scheduled run. Slugs reflect the Axxion `people` and `insurers` objects at build time. `list-attribute-definitions` is the source of truth.
+Verify against the live workspace before the first scheduled run. Slugs reflect Axxion after the August 2026 migration, when the `insurers` custom object was retired into **Companies**. `list-attribute-definitions object=people` and `list-list-attribute-definitions list=insurers_3` are the source of truth.
 
 ## People field map
 
@@ -230,10 +231,14 @@ Verify against the live workspace before the first scheduled run. Slugs reflect 
 
 A person belongs to an insurer account by either path:
 
-1. **Via company.** `people.company` is a record-reference to a `companies` record. An insurer's `insurers.main_company` points to the same `companies` record. Match on the companies `record_id`.
-2. **Via referral_contact.** An insurer's `insurers.referral_contact` is a multi record-reference listing people directly.
+1. **Via company.** `people.company` is a record-reference to a `companies` record. That company is an insurer when it appears on the **Insurers list** (`insurers_3`). Match on the companies `record_id`.
+2. **Via referral_contact.** `referral_contact` is a record-reference **entry attribute on the Insurers list**, listing people directly.
 
-Build an index once per run: for every insurer, map `main_company.record_id → {insurer record_id, name}` and collect `referral_contact` person ids. Then a person is linked if their `company.record_id` is in that map or their id is in the referral set. Use the insurer `name` for the gap analysis.
+Build an index once per run: `list-records-in-list list=insurers_3` → the set of insurer Company record_ids with their names, plus the `referral_contact` person ids from the entries. A person is linked if their `company.record_id` is in that set or their id is in the referral set. Use the Company `name` for the gap analysis.
+
+The old model put an `insurers` record in the middle, and you had to hop `insurer.main_company → companies`. That hop is gone: the Company *is* the insurer.
+
+**Similar names are separate accounts.** The workspace holds distinct Companies for general vs life licences, takaful vs conventional arms, and branches vs parents (*Chubb Insurance Egypt* / *Chubb Life Egypt*, *Liva Insurance B.S.C.* / *Liva Insurance B.S.C. (c) (UAE Branch)*). Never treat them as one account, and never treat a move between them as a name variant.
 
 ## Monitored-set query
 
@@ -247,25 +252,22 @@ Practical approach: `list-records object=people` with an OR filter across those 
 
 ## Champion Moves list
 
-Does not exist yet. The MCP cannot create lists, so the customer creates it in Attio:
+**Built 18 August 2026.** Parent object **people**, slug `champion_moves`. Nothing to create.
 
-1. New list, parent object **people**, name **Champion Moves** (suggested slug `champion_moves`).
-2. Entry attributes the agent writes via `add-record-to-list`:
-
-| Entry attribute | Suggested slug | Type | Agent writes |
+| Entry attribute | Slug | Type | Agent writes |
 |---|---|---|---|
-| Status | `status` | status or select | `New` (options: New, Drafts ready, Outreach sent, Closed) |
-| Affected insurer | `affected_insurer` | record-reference → insurers | The insurer account with the gap |
-| Vacated role | `vacated_role` | text | The seat now open (the person's prior job title) |
+| Status | `status` | select | `New`. Options: New, Drafts ready, Outreach sent, Closed |
+| Affected insurer | `affected_insurer` | record-reference → **companies** | The insurer account with the gap |
+| Vacated role | `vacated_role` | text | The seat now open, the person's prior job title |
 | New company | `new_company` | text | Where the person moved to |
 | New role | `new_role` | text | Their new title |
-| Detected on | `detected_on` | date | Run date |
-| Source | `source` | text | LinkedIn URL evidence |
-| Confidence | `confidence` | select | `Confirmed` or `Possible` (options: Confirmed, Possible) |
+| Detected on | `detected_on` | date | Run date, not the date the person moved |
+| Source | `source` | text | The LinkedIn URL the move was read from |
+| Confidence | `confidence` | select | `Confirmed` or `Possible` |
 
-3. Put the slug into `<MOVES_LIST>`.
+`affected_insurer` points at **companies**, not the retired insurers object. Insurers are ordinary Companies now and the Insurers list (`insurers_3`) defines the set.
 
-Discover the real entry-attribute slugs at runtime with `list-list-attribute-definitions list=champion_moves`; the names above are suggestions. Until the list exists, the agent flags moves on the person record (`last_job_change` + a note) and warns once in the summary.
+Still discover the live slugs at runtime with `list-list-attribute-definitions list=champion_moves` before writing.
 
 ## Connectors checklist
 
@@ -274,137 +276,3 @@ Discover the real entry-attribute slugs at runtime with `list-list-attribute-def
 - Lusha MCP connected (fallback profile resolution).
 - Web search/fetch available.
 - Slack MCP (optional) connected; alert channel invited the Claude app.
-
-
----
-
-## Appendix B — detection-playbook.md
-
-# Detection playbook
-
-How to decide, for one person, whether they have moved. The bar is high: a false "they left" wastes BD time and can embarrass the team. When unsure, downgrade to `possible`, never assert.
-
-## The comparison
-
-For each monitored person:
-
-1. **Attio side.** Read the linked `company` record's `name` and the person's `job_title`. Normalize the company name (lowercase, strip legal suffixes like PSC, LLC, PJSC, Insurance, Takaful, Co.).
-2. **LinkedIn side.** From `<APIFY_LINKEDIN_ACTOR>`, take the profile's current employer and current title. Normalize the same way.
-3. **Decide:**
-   - **No move** — normalized current employer matches the Attio company (exact or clear variant).
-   - **Confirmed move** — normalized current employer is clearly a different organization, the LinkedIn position looks current, and ideally one corroborator agrees (see below).
-   - **Possible move** — there is a difference, but it could be a name variant, an M&A rename, a stale profile, or a partial match. Flag as `possible`, do not assert.
-
-## Corroboration (raise confidence to Confirmed)
-
-Use at least one when you can:
-
-- **LinkedIn recency.** The profile shows a recently started position at the new employer ("started <month year>").
-- **Email domain.** A known new email domain on the person matches the new employer (e.g. moved from `@oldco.ae` to `@newco.com`). Domain change alone is weak; pair it with LinkedIn.
-- **Web confirmation.** A quick `WebSearch` ("<person> <new company> appointed / joins") returns a credible source.
-
-If none corroborate and the profile is ambiguous, keep it `possible`.
-
-## False-positive guards (treat as NO move)
-
-- **Name variants.** "Abu Dhabi National Takaful Co. PSC" vs "ADNTC" vs "Abu Dhabi National Takaful" is the same employer. Match on the normalized core, not the string.
-- **M&A renames.** The company was renamed or merged, but the person did not move (e.g. "AXA Gulf" → "GIG Gulf"). If the person is at the renamed-but-same entity, it is not a champion move; note it as a company-name update for BD, not a departure.
-- **Title-only change.** Same employer, new title (promotion). Not a champion move. Optionally note the promotion in `last_job_change`, but do not run the gap/intro play.
-- **Stale or private profile.** If the actor returns nothing current or an obviously old position, do not infer a move. Record the check as inconclusive and move on.
-
-## Identify the gap
-
-On a confirmed move:
-
-1. **Affected insurer.** The insurer account the person belonged to (from the insurer index). Use its `name`.
-2. **Vacated seat.** Their prior `job_title` at that insurer (e.g. "Head of Motor Claims"). This is the role now likely open.
-3. **Remaining coverage.** Are there other monitored contacts still at that insurer? List them (name, title). If none, the account has zero live contact, which raises priority.
-4. **Why it matters.** One line: what this seat does for Axxion's pipeline (referral approval, claims handling, decision making) so BD understands the urgency.
-
-This gap analysis goes into the person note and feeds the intro-request draft.
-
-## Budget and order
-
-Roughly one APIFY profile fetch per person, plus an occasional web search to corroborate or learn the new company. Process least-recently-checked first so coverage rotates evenly across weeks. Moves are rare; a run that finds none and just refreshes check dates is a normal, healthy outcome.
-
-
----
-
-## Appendix C — outreach-drafts.md
-
-# Outreach drafts
-
-Two drafts per confirmed move. They are drafts: a human reviews and sends. Write them as a person would write to someone they know, not as mail-merge.
-
-## Rules for both drafts
-
-- **Personal, not templated.** Reference the actual person, their actual move, the actual account, and (where known) something specific: the role they held, how long, a project or interaction on the record. Use the person record's notes, last interactions, and a light web check.
-- **Short.** Three to five sentences. Busy senior insurance people.
-- **One clear ask each.** Congrats draft: warm, no ask, or at most a soft "let us stay in touch." Intro draft: one specific ask.
-- **Voice.** Plain, direct, warm. No corporate filler. No em dashes. Customer-first: lead with them, not with Axxion.
-- **No fabrication.** Do not invent a relationship history, a mutual contact, or a project that is not on the record. If you do not know it, leave it out.
-- **Sign-off.** Leave the sender as the person's `contact_owner` if known; otherwise a neutral placeholder the BD owner fills in. Never send; these are drafts only.
-
-## Draft 1: Congratulations to the mover (new role)
-
-Goal: keep the relationship warm at the new company. No hard sell.
-
-Shape:
-- Open with genuine congratulations on the specific new role and company.
-- One line acknowledging the work or relationship at the old account, if the record supports it.
-- A soft note that you would value staying in touch, and a light hook to their new remit if there is an honest one (only if Axxion plausibly serves their new context).
-- Warm close.
-
-Example (illustrative, always rewrite to the real person):
-
-```
-Subject: Congratulations on the move to <New Company>
-
-Hi <First name>,
-
-Saw the news that you have stepped into <New role> at <New Company> — congratulations, well deserved after your work leading <vacated role> at <Old insurer>.
-
-It was good working with you on the motor-claims side these past <period>. I would love to stay in touch as you settle in; if motor claims is on your plate at <New Company>, happy to share what we are seeing in the market.
-
-Wishing you a strong start.
-
-<Contact owner / sender>
-```
-
-## Draft 2: Introduction request (fill the vacated seat)
-
-Goal: keep the insurer account covered. Default recipient is the departed champion (warm handoff). If there is a stronger remaining contact at the insurer, address it to them instead and say which you chose and why.
-
-Shape:
-- Reference the move and the gap honestly.
-- Ask for one introduction: to whoever now owns the vacated seat (or will).
-- Make it easy: offer a one-line context they can forward.
-- Low-pressure close.
-
-Example (illustrative, always rewrite):
-
-```
-Subject: A quick introduction at <Old insurer>?
-
-Hi <First name>,
-
-Congratulations again on <New Company>. With you moving on, I want to make sure we keep supporting <Old insurer> well on motor claims.
-
-Would you be open to a quick introduction to whoever is picking up <vacated role>? Even a one-line forward would help. Happy to send a short note you can pass along.
-
-Thanks either way, and all the best in the new role.
-
-<Contact owner / sender>
-```
-
-If addressing a remaining contact at the insurer instead, adjust: acknowledge <departed champion> has moved on, and ask who now owns <vacated role> so coverage continues.
-
-## Where the drafts go
-
-- Both drafts go in a **note on the person record**, under a heading with the move summary and the gap analysis, so BD has everything in one place.
-- The Champion Moves list entry holds the structured routing (status, affected insurer, vacated role, new company/role, source, confidence). Keep the long-form drafts in the note, not the list fields.
-- If the run is configured for Slack, the alert is one line and links nothing sensitive: "<Person> moved from <Old insurer> to <New company>. Vacated: <role>. Drafts on the record."
-
-## Possible (unconfirmed) moves
-
-When confidence is `Possible`, do not write outreach drafts. Write only the flag and a short note: what differs, what you checked, and the one thing a human should verify (e.g. "LinkedIn shows <New Company> but no start date; confirm before acting"). Outreach waits until a human confirms.

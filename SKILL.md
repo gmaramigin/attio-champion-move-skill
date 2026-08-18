@@ -17,7 +17,7 @@ description: >
   moved", "watch my contacts for job changes", or when the user names a contact
   and asks whether they have moved.
 metadata:
-  version: 1.0.0
+  version: 1.1.0
   workspace: Axxion
 ---
 
@@ -47,7 +47,7 @@ Four situations:
 |---|---|---|
 | `<YOUR_WORKSPACE_NAME>` | `Axxion` | Exact value `whoami` returns from the Attio MCP |
 | `<PEOPLE_OBJECT>` | `people` | The people object slug |
-| `<INSURER_OBJECT>` | `insurers` | The insurers object slug |
+| `<INSURER_LIST>` | `insurers_3` | The Insurers list on Companies. Its membership defines which companies are insurers |
 | `<MOVES_LIST>` | `champion_moves` | The Champion Moves list slug (created by the customer; see references/attio-setup.md) |
 | `<RECHECK_DAYS>` | `30` | Skip any person checked within this many days (LinkedIn roles do not change weekly) |
 | `<MAX_PEOPLE_PER_RUN>` | `40` | Cap people checked per run. The next run continues with the least-recently-checked |
@@ -60,8 +60,8 @@ Four situations:
 A person is **in scope** when both hold:
 
 1. They are **linked to an insurer**:
-   - their `company` record-reference points to the same companies record an insurer's `main_company` points to, OR
-   - they appear in an insurer's `referral_contact`.
+   - their `company` record-reference points to a Company that sits on the Insurers list (`insurers_3`), OR
+   - they appear in that company's Insurers list entry under `referral_contact`.
 2. They hold a **high-value seat**:
    - `tpa_role` in {`Claims handler`, `Referral approver`}, OR
    - `buying_role` = `Decision Maker`, OR
@@ -87,15 +87,17 @@ Discover live with `list-attribute-definitions object=people`. Relevant slugs:
 | Last job change | `last_job_change` | text | Stamp the detected move here |
 | LinkedIn checked | `linkedin_checked` | date | Stamp every run (the idempotency anchor), even on a no-move pass |
 
-The `insurers` object links to people via `referral_contact` (people) and `main_company` (companies). Read an insurer's `name` for the gap analysis.
+**Where insurers live.** Insurers used to be their own custom object; the August 2026 migration retired it into **Companies**. A person now belongs to an insurer when their `company` reference points at a Company that is on the Insurers list. The old `main_company` hop is gone, so resolution is one step instead of two. `referral_contact` is now an entry attribute on the Insurers list, not a field on a custom object. Read the Company `name` for the gap analysis.
+
+**Do not collapse similar insurer names.** The workspace deliberately holds separate Companies for a group's general and life licences, its takaful arm, and its branches. Two people at *Chubb Insurance Egypt* and *Chubb Life Egypt* are at different accounts, and a champion moving between them is a real move.
 
 ## Modes
 
 ### Mode 1: Setup
 1. `whoami` → confirm workspace equals `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
-2. `list-attribute-definitions object=people` and `object=insurers` → confirm slugs.
+2. `list-attribute-definitions object=people` and `list-list-attribute-definitions list=insurers_3` → confirm slugs.
 3. Confirm APIFY connected; identify the LinkedIn profile actor → `<APIFY_LINKEDIN_ACTOR>`. Confirm Lusha + web available.
-4. `list-lists query="champion"` → confirm the Champion Moves list exists. If not, the customer creates it (the MCP cannot create lists). See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). Until it exists, moves are flagged on the person record only.
+4. `list-lists query="champion"` → confirm the Champion Moves list is there. It was built on 18 August 2026, slug `champion_moves`, parent object people, with all eight entry attributes. See [references/attio-setup.md](references/attio-setup.md#champion-moves-list). If it is ever missing, moves are flagged on the person record only.
 5. Build the monitored set once and eyeball it: are these the seats BD cares about?
 6. Run Mode 3 (demo) on 2-3 contacts, including one you know recently moved. Check that detection is right and the drafts read like a person wrote them.
 7. Install the weekly scheduled task (see SCHEDULING.md).
@@ -106,8 +108,8 @@ The `insurers` object links to people via `referral_contact` (people) and `main_
 1. **Workspace gate.** `whoami` → must equal `<YOUR_WORKSPACE_NAME>`. Hard-stop on mismatch.
 2. **Field map + option maps.** `list-attribute-definitions object=people`.
 3. **Moves list.** `list-lists query="champion"` → cache the list ID + entry attributes (`list-list-attribute-definitions`). If absent, set `moves_list_available = false`.
-4. **Insurer index.** `list-records object=insurers` → cache a map of `main_company` record_id → insurer (record_id, name), and collect `referral_contact` person ids. This is how you resolve which insurer a person belongs to.
-5. **Build the monitored set.** `list-records object=people` filtered to the high-value seats above; intersect with people linked to an insurer (via the insurer index); keep those with a `linkedin` URL; exclude anyone checked within `<RECHECK_DAYS>` (see idempotency); cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
+4. **Insurer index.** `list-records-in-list list=insurers_3` → cache the set of Company record_ids that are insurers, with their names, and collect the `referral_contact` person ids from the entries. A person's `company` reference hitting that set is what makes them an insurer contact.
+5. **Build the monitored set.** `list-records object=people` filtered to the high-value seats above; intersect with people whose `company` is in the insurer index; keep those with a `linkedin` URL; exclude anyone checked within `<RECHECK_DAYS>` (see idempotency); cap at `<MAX_PEOPLE_PER_RUN>`, least-recently-checked first.
 
 **Per-person loop:**
 1. **Resolve the LinkedIn profile.** Use `linkedin`; if missing, try Lusha by email + name. If unresolved, skip with `no_linkedin`.
